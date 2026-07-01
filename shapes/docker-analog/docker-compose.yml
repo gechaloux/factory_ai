@@ -1,0 +1,27 @@
+# docker-analog template — the local stand-in for AWS.
+# new-line copies this into a line and trims/extends services to match the line's `services` field.
+# This is disposable infrastructure: tear it down freely. Nothing here is precious.
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"            # single edge port for all mocked AWS services
+    environment:
+      # Set SERVICES to exactly what the line uses (from .factory `services`), e.g. "s3,lambda,dynamodb".
+      - SERVICES=${ANALOG_SERVICES:-s3,lambda,dynamodb,iam,sts}
+      - DEBUG=0
+      - PERSISTENCE=0          # disposable by default; the analog is not a database you keep
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  # Optional real datastore for lines that want one locally instead of a mocked managed DB.
+  # Delete this block if the line doesn't need it.
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=local-analog-only   # local disposable analog; not a real secret
+      - POSTGRES_DB=line
+    profiles: ["with-db"]      # only starts when explicitly requested: docker compose --profile with-db up

@@ -1,0 +1,60 @@
+{
+  "//factory": "Factory orchestration hooks. The installers (install.sh / install.ps1) rewrite __PYTHON__ and __HOOKS_DIR__ for this machine and MERGE this block into any existing settings.json (other keys preserved). On Windows the interpreter is 'py' (python3/python are dead Microsoft Store stubs); on POSIX it is python3. Hook paths are made ABSOLUTE because '~' is not reliably expanded in hook shells. The hook .py files carry a dirname==d root-walk guard so they cannot hang on a Windows drive root.",
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "//": "Cred-leak guard: block a write/command containing a hardcoded secret.",
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          { "type": "command", "command": "__PYTHON__ __HOOKS_DIR__/cred-guard.py" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "//": "Burn-detection ratchet: feeds the regression dimension automatically.",
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "__PYTHON__ __HOOKS_DIR__/burn-detect.py" }
+        ]
+      },
+      {
+        "//": "Cost/observability log: append a per-turn record to factory-log.jsonl.",
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "__PYTHON__ __HOOKS_DIR__/cost-log.py" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "//": "Deterministic line-loop: a build line cannot finish until its eval suite is green. Red routes failures back to the model; bounded by loop_max.",
+        "hooks": [
+          { "type": "command", "command": "__PYTHON__ __HOOKS_DIR__/loop-gate.py" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "//": "Same loop gate for foreman child-line subagents - a delegated line is held to its eval suite exactly like a standalone one.",
+        "hooks": [
+          { "type": "command", "command": "__PYTHON__ __HOOKS_DIR__/loop-gate.py" }
+        ]
+      }
+    ]
+  },
+
+  "//routing": "Factory routing policy - an orchestration PLACEHOLDER, not a native Claude Code setting. Nothing in the harness reads this block; it documents the intended model tiering (frontier for judgment, local for deterministic bulk). Enforce it through skills/prompts, not by expecting Claude Code to honor it.",
+  "routing": {
+    "default": "frontier",
+    "rules": [
+      { "task": "spec-interview", "model": "frontier" },
+      { "task": "architecture", "model": "frontier" },
+      { "task": "iac-authoring", "model": "frontier" },
+      { "task": "boilerplate-scaffold", "model": "local" },
+      { "task": "test-generation", "model": "local" },
+      { "task": "deterministic-checks", "model": "local" }
+    ]
+  }
+}

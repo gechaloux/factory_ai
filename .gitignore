@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build/merge bundles (repo is the authoritative source)
+*.tar.gz

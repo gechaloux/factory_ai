@@ -1,0 +1,136 @@
+# Reusable CI/CD workflow — the factory's shared gate for deploying lines.
+# Both deploying shapes (docker-analog, aws-dev-analog) terminate here. new-line drops this into a
+# deploying line at .github/workflows/deploy.yml.
+#
+# Three machine gates run on every PR and ALL must pass before merge is allowed:
+#   1. code-ci    — deterministic: lint, typecheck, the line's test suite + evals
+#   2. ai-review  — AI first-pass review of the diff (bugs, security, hallucinated deps)
+#   3. infra-plan — terraform plan + policy/security scan, plan posted to the PR
+# Merge is the human gate. On merge, apply-to-prod runs, gated behind all three having passed.
+#
+# IMPORTANT: this workflow makes the checks RUN and report status. To make them actually BLOCK a
+# merge, mark all three job names as REQUIRED status checks in branch protection on main
+# (see README "Required checks" — the workflow alone cannot enforce this).
+name: factory-deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write          # OIDC federation to AWS — no long-lived keys in CI
+  contents: read
+  pull-requests: write     # to post plan + AI review comments
+
+jobs:
+  # ----- GATE 1: deterministic code review -----
+  code-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up runtime
+        run: echo "set up the line's language/runtime here (node/python/etc.)"
+      - name: Install deps
+        run: |
+          # e.g. npm ci  /  pip install -r requirements.txt
+          echo "install placeholder — wire to the line's stack"
+      - name: Lint
+        run: echo "lint placeholder — eslint/ruff/etc.; fail job on violations"
+      - name: Typecheck
+        run: echo "typecheck placeholder — tsc/mypy/etc."
+      - name: Tests + evals
+        # Runs the line's own test suite AND the evals eval-scaffold raised (incl. crystallized
+        # regression checks from the repeat-bug-catcher). The deterministic half of correctness.
+        run: |
+          echo "run test suite + evals/ here; fail job on any failure"
+
+  # ----- GATE 2: AI first-pass review of the diff -----
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get PR diff
+        if: github.event_name == 'pull_request'
+        run: git diff origin/main...HEAD > pr.diff
+      - name: AI review of diff
+        if: github.event_name == 'pull_request'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Send pr.diff to a model with a review rubric: bugs, security issues, hallucinated /
+          # non-existent dependencies, inadequate error handling, subtle correctness gaps. Require
+          # structured output (e.g. JSON list of findings with severity). Exit non-zero if any
+          # finding is at or above a blocking severity — that is what makes this a real gate, not
+          # just advisory comments.
+          echo "AI review placeholder — call the API with pr.diff + rubric; fail on blocking findings"
+      - name: Post review comments
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Post the model's findings as PR comments so they're on the review surface for you.
+            const fs = require('fs');
+            if (fs.existsSync('ai-findings.md')) {
+              const body = fs.readFileSync('ai-findings.md', 'utf8').slice(0, 60000);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: "### AI first-pass review\n" + body
+              });
+            }
+
+  # ----- GATE 3: infrastructure plan + policy scan -----
+  infra-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform init
+        run: terraform init -input=false
+      - name: Terraform plan (against prod)
+        run: terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+      - name: Policy / security scan
+        # Disruption gate: destructive changes, insecure config, policy violations. Fail on violation.
+        run: |
+          # e.g. checkov -d . --quiet || exit 1
+          echo "scan placeholder — wire your IaC scanner here"
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8').slice(0, 60000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: "### Terraform plan (what merging will do to prod)\n```\n" + plan + "\n```"
+            });
+
+  # ----- DEPLOY: only on merge, only after all three gates passed -----
+  deploy:
+    needs: [code-ci, ai-review, infra-plan]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production          # GitHub Environment adds optional second approval + audit trail
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform init
+        run: terraform init -input=false
+      - name: Terraform apply (prod)
+        run: terraform apply -auto-approve -input=false
